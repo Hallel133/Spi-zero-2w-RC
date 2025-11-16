@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>שלט RC מלא</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            padding: 15px;
+            min-height: 100vh;
+        }
+        .dashboard {
+            max-width: 1600px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr;
+            gap: 15px;
+        }
+        .panel {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+        }
+        .full-width { grid-column: 1 / -1; }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 15px;
+            font-size: 24px;
+        }
+        h2 {
+            color: #555;
+            margin-bottom: 12px;
+            font-size: 18px;
+            border-bottom: 2px solid #2a5298;
+            padding-bottom: 8px;
+        }
+        #video {
+            width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        
+        /* Gamepad Controls */
+        .gamepad-section {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            margin-bottom: 15px;
+        }
+        .status-dot {
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background: #ff5252;
+            display: inline-block;
+            margin-left: 8px;
+            animation: pulse 2s infinite;
+        }
+        .status-dot.connected { background: #4CAF50; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Button Mapping */
+        .mapping-config {
+            margin-top: 15px;
+        }
+        .mapping-row {
+            display: grid;
+            grid-template-columns: 1fr 2fr 80px;
+            gap: 10px;
+            margin: 8px 0;
+            align-items: center;
+        }
+        .mapping-label {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .mapping-select {
+            padding: 8px;
+            border-radius: 5px;
+            border: none;
+            background: rgba(255,255,255,0.9);
+            font-size: 14px;
+        }
+        .btn-learn {
+            padding: 8px;
+            background: #FFC107;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        .btn-learn:hover { background: #FFD54F; }
+        .btn-learn.learning {
+            background: #ff5252;
+            animation: blink 0.5s infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Media Controls */
+        .media-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .media-btn {
+            padding: 15px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: white;
+            font-size: 14px;
+        }
+        .media-btn:hover { transform: translateY(-2px); }
+        .btn-photo { background: #2196F3; }
+        .btn-record { background: #f44336; }
+        .btn-record.recording {
+            animation: record-pulse 1s infinite;
+        }
+        @keyframes record-pulse {
+            0%, 100% { background: #f44336; }
+            50% { background: #d32f2f; }
+        }
+        
+        /* GPS Panel */
+        .gps-data {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .gps-item {
+            background: #f5f5f5;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .gps-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .gps-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+        }
+        .nav-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .nav-btn {
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: white;
+        }
+        .btn-set-home { background: #4CAF50; }
+        .btn-return-home { background: #FF9800; }
+        .btn-cancel-nav { background: #f44336; }
+        
+        /* Gallery */
+        .gallery {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .gallery-item {
+            position: relative;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .gallery-item:hover { transform: scale(1.05); }
+        .gallery-item img {
+            width: 100%;
+            height: 100px;
+            object-fit: cover;
+        }
+        .gallery-item .timestamp {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px;
+            font-size: 11px;
+            text-align: center;
+        }
+        
+        /* Manual Controls */
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin: 15px 0;
+        }
+        button {
+            padding: 15px;
+            font-size: 14px;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: white;
+        }
+        .forward { background: #4CAF50; grid-column: 2; }
+        .left { background: #2196F3; grid-column: 1; grid-row: 2; }
+        .stop { background: #f44336; grid-column: 2; grid-row: 2; }
+        .right { background: #2196F3; grid-column: 3; grid-row: 2; }
+        .backward { background: #FF9800; grid-column: 2; grid-row: 3; }
+        
+        .sensor-data {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .sensor-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        @media (max-width: 1200px) {
+            .dashboard { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="panel full-width">
+            <h1>Spi zero 2w RC</h1>
+            <img id="video" src="/video_feed" alt="וידאו חי">
+        </div>
+        
+        <!-- Gamepad Panel -->
+        <div class="panel">
+            <div class="gamepad-section">
+                <h2 style="color: white; border: none; margin-bottom: 10px;">
+                    Controller mapping
+                    <span class="status-dot" id="gamepadDot"></span>
+                </h2>
+                <div style="font-size: 14px; margin-bottom: 10px;" id="gamepadName">
+                    לא מחובר
+                </div>
+                
+                <div class="mapping-config">
+                    <h3 style="font-size: 16px; margin-bottom: 10px;">מיפוי כפתורים</h3>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">קדימה:</div>
+                        <select class="mapping-select" id="mapForward">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('forward')">למד</button>
+                    </div>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">אחורה:</div>
+                        <select class="mapping-select" id="mapBackward">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('backward')">למד</button>
+                    </div>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">שמאלה:</div>
+                        <select class="mapping-select" id="mapLeft">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('left')">למד</button>
+                    </div>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">ימינה:</div>
+                        <select class="mapping-select" id="mapRight">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('right')">למד</button>
+                    </div>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">עצירה:</div>
+                        <select class="mapping-select" id="mapStop">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('stop')">למד</button>
+                    </div>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">צילום:</div>
+                        <select class="mapping-select" id="mapPhoto">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('photo')">למד</button>
+                    </div>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">הקלטה:</div>
+                        <select class="mapping-select" id="mapRecord">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('record')">למד</button>
+                    </div>
+                    
+                    <div class="mapping-row">
+                        <div class="mapping-label">אורות:</div>
+                        <select class="mapping-select" id="mapLights">
+                            <option value="">בחר כפתור...</option>
+                        </select>
+                        <button class="btn-learn" onclick="learnButton('lights')">למד</button>
+                    </div>
+                    
+                    <button style="width: 100%; margin-top: 10px; background: #4CAF50;" 
+                            onclick="saveMapping()">💾 שמור מיפוי</button>
+                    <button style="width: 100%; margin-top: 5px; background: #607D8B;" 
+                            onclick="loadMapping()">📥 טען מיפוי</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Media Panel -->
+        <div class="panel">
+            <h2>📸 מדיה</h2>
+            
+            <div class="media-controls">
+                <button class="media-btn btn-photo" onclick="takePhoto()">
+                    📷 צלם תמונה
+                </button>
+                <button class="media-btn btn-record" id="recordBtn" onclick="toggleRecording()">
+                    🎥 התחל הקלטה
+                </button>
+            </div>
+            
+            <div class="sensor-data">
+                <div class="sensor-card">
+                    <div style="font-size: 12px;">תמונות</div>
+                    <div style="font-size: 24px; font-weight: bold;" id="photoCount">0</div>
+                </div>
+                <div class="sensor-card">
+                    <div style="font-size: 12px;">סרטונים</div>
+                    <div style="font-size: 24px; font-weight: bold;" id="videoCount">0</div>
+                </div>
+            </div>
+            
+            <h3 style="margin-top: 15px; font-size: 16px;">גלריה אחרונה</h3>
+            <div class="gallery" id="gallery"></div>
+        </div>
+        
+        <!-- GPS Panel -->
+        <div class="panel">
+            <h2>📍 GPS וניווט</h2>
+            
+            <div class="gps-data">
+                <div class="gps-item">
+                    <div class="gps-label">קו רוחב</div>
+                    <div class="gps-value" id="latitude">--</div>
+                </div>
+                <div class="gps-item">
+                    <div class="gps-label">קו אורך</div>
+                    <div class="gps-value" id="longitude">--</div>
+                </div>
+                <div class="gps-item">
+                    <div class="gps-label">גובה</div>
+                    <div class="gps-value" id="altitude">--</div>
+                </div>
+                <div class="gps-item">
+                    <div class="gps-label">מהירות</div>
+                    <div class="gps-value" id="speed">--</div>
+                </div>
+                <div class="gps-item">
+                    <div class="gps-label">לוויינים</div>
+                    <div class="gps-value" id="satellites">0</div>
+                </div>
+                <div class="gps-item">
+                    <div class="gps-label">מרחק לבית</div>
+                    <div class="gps-value" id="distanceHome">--</div>
+                </div>
+            </div>
+            
+            <div class="nav-controls">
+                <button class="nav-btn btn-set-home" onclick="setHome()">
+                    🏠 קבע כבית
+                </button>
+                <button class="nav-btn btn-return-home" id="returnBtn" onclick="returnHome()">
+                    🧭 חזור לבית
+                </button>
+            </div>
+            <button class="nav-btn btn-cancel-nav" style="width: 100%; margin-top: 10px; display: none;" 
+                    id="cancelBtn" onclick="cancelNavigation()">
+                ❌ בטל ניווט
+            </button>
+            
+            <div id="navStatus" style="margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 5px; display: none;">
+                <div style="font-weight: bold; margin-bottom: 5px;">סטטוס ניווט:</div>
+                <div id="navMessage"></div>
+            </div>
+        </div>
+        
+        <!-- Manual Control Panel -->
+        <div class="panel">
+            <h2>🎮 בקרה ידנית</h2>
+            
+            <div class="controls">
+                <button class="forward" onmousedown="sendCommand('forward')" onmouseup="sendCommand('stop')">▲</button>
+                <button class="left" onmousedown="sendCommand('left')" onmouseup="sendCommand('stop')">◄</button>
+                <button class="stop" onclick="sendCommand('stop')">■</button>
+                <button class="right" onmousedown="sendCommand('right')" onmouseup="sendCommand('stop')">►</button>
+                <button class="backward" onmousedown="sendCommand('backward')" onmouseup="sendCommand('stop')">▼</button>
+            </div>
+            
+            <div class="sensor-data">
+                <div class="sensor-card">
+                    <div style="font-size: 12px;">מרחק מכשול</div>
+                    <div style="font-size: 28px; font-weight: bold;" id="distance">--</div>
+                    <div style="font-size: 12px;">ס"מ</div>
+                </div>
+                <div class="sensor-card">
+                    <div style="font-size: 12px;">סטטוס</div>
+                    <div style="font-size: 18px; font-weight: bold;" id="statusText">מוכן</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let currentGamepad = null;
+        let gamepadIndex = -1;
+        let isRecording = false;
+        let learningMode = null;
+        let buttonMapping = {
+            forward: null, backward: null, left: null, right: null,
+            stop: null, photo: null, record: null, lights: null
+        };
+        let lastButtonStates = {};
+
+        // ===== Gamepad Detection =====
+        window.addEventListener('gamepadconnected', (e) => {
+            console.log('Gamepad connected:', e.gamepad);
+            updateGamepadInfo();
+            populateButtonOptions();
+        });
+
+        function updateGamepadInfo() {
+            const gamepads = navigator.getGamepads();
+            const gp = Array.from(gamepads).find(g => g !== null);
+            
+            if (gp) {
+                gamepadIndex = gp.index;
+                document.getElementById('gamepadDot').classList.add('connected');
+                document.getElementById('gamepadName').textContent = gp.id;
+            } else {
+                gamepadIndex = -1;
+                document.getElementById('gamepadDot').classList.remove('connected');
+                document.getElementById('gamepadName').textContent = 'לא מחובר';
+            }
+        }
+
+        function populateButtonOptions() {
+            const gamepads = navigator.getGamepads();
+            const gp = gamepads[gamepadIndex];
+            if (!gp) return;
+
+            const selects = document.querySelectorAll('.mapping-select');
+            selects.forEach(select => {
+                select.innerHTML = '<option value="">בחר כפתור...</option>';
+                for (let i = 0; i < gp.buttons.length; i++) {
+                    const opt = document.createElement('option');
+                    opt.value = `button_${i}`;
+                    opt.textContent = `כפתור ${i}`;
+                    select.appendChild(opt);
+                }
+                for (let i = 0; i < gp.axes.length; i++) {
+                    const opt = document.createElement('option');
+                    opt.value = `axis_${i}`;
+                    opt.textContent = `ציר ${i}`;
+                    select.appendChild(opt);
+                }
+            });
+        }
+
+        // ===== Button Learning =====
+        function learnButton(action) {
+            learningMode = action;
+            const btn = event.target;
+            btn.classList.add('learning');
+            btn.textContent = 'לחץ על כפתור...';
+            
+            setTimeout(() => {
+                if (learningMode === action) {
+                    btn.classList.remove('learning');
+                    btn.textContent = 'למד';
+                    learningMode = null;
+                }
+            }, 5000);
+        }
+
+        function detectButtonPress() {
+            if (!learningMode || gamepadIndex < 0) return;
+            
+            const gamepads = navigator.getGamepads();
+            const gp = gamepads[gamepadIndex];
+            if (!gp) return;
+
+            // Check buttons
+            for (let i = 0; i < gp.buttons.length; i++) {
+                if (gp.buttons[i].pressed && !lastButtonStates[`button_${i}`]) {
+                    buttonMapping[learningMode] = `button_${i}`;
+                    document.getElementById(`map${learningMode.charAt(0).toUpperCase() + learningMode.slice(1)}`).value = `button_${i}`;
+                    
+                    const btn = document.querySelector(`.btn-learn.learning`);
+                    if (btn) {
+                        btn.classList.remove('learning');
+                        btn.textContent = 'למד';
+                    }
+                    learningMode = null;
+                    break;
+                }
+            }
+
+            // Update button states
+            lastButtonStates = {};
+            for (let i = 0; i < gp.buttons.length; i++) {
+                lastButtonStates[`button_${i}`] = gp.buttons[i].pressed;
+            }
+        }
+
+        // ===== Mapping Save/Load =====
+        function saveMapping() {
+            // Get values from selects
+            for (const action in buttonMapping) {
+                const select = document.getElementById(`map${action.charAt(0).toUpperCase() + action.slice(1)}`);
+                if (select) buttonMapping[action] = select.value;
+            }
+            
+            localStorage.setItem('gamepadMapping', JSON.stringify(buttonMapping));
+            alert('✅ מיפוי נשמר!');
+        }
+
+        function loadMapping() {
+            const saved = localStorage.getItem('gamepadMapping');
+            if (saved) {
+                buttonMapping = JSON.parse(saved);
+                
+                // Update selects
+                for (const action in buttonMapping) {
+                    const select = document.getElementById(`map${action.charAt(0).toUpperCase() + action.slice(1)}`);
+                    if (select && buttonMapping[action]) {
+                        select.value = buttonMapping[action];
+                    }
+                }
+                alert('✅ מיפוי נטען!');
+            } else {
+                alert('❌ אין מיפוי שמור');
+            }
+        }
+
+        // ===== Gamepad Control Loop =====
+        function pollGamepad() {
+            detectButtonPress();
+            
+            if (gamepadIndex < 0) {
+                requestAnimationFrame(pollGamepad);
+                return;
+            }
+
+            const gamepads = navigator.getGamepads();
+            currentGamepad = gamepads[gamepadIndex];
+            if (!currentGamepad) {
+                requestAnimationFrame(pollGamepad);
+                return;
+            }
+
+            // Check mapped buttons
+            for (const action in buttonMapping) {
+                const mapping = buttonMapping[action];
+                if (!mapping) continue;
+
+                const [type, index] = mapping.split('_');
+                const idx = parseInt(index);
+                let isPressed = false;
+
+                if (type === 'button') {
+                    isPressed = currentGamepad.buttons[idx]?.pressed || false;
+                } else if (type === 'axis') {
+                    isPressed = Math.abs(currentGamepad.axes[idx] || 0) > 0.5;
+                }
+
+                if (isPressed && !lastButtonStates[mapping]) {
+                    handleMappedAction(action);
+                }
+
+                lastButtonStates[mapping] = isPressed;
+            }
+
+            requestAnimationFrame(pollGamepad);
+        }
+
+        function handleMappedAction(action) {
+            switch(action) {
+                case 'forward': sendCommand('forward'); break;
+                case 'backward': sendCommand('backward'); break;
+                case 'left': sendCommand('left'); break;
+                case 'right': sendCommand('right'); break;
+                case 'stop': sendCommand('stop'); break;
+                case 'photo': takePhoto(); break;
+                case 'record': toggleRecording(); break;
+                case 'lights': socket.emit('lights', {}); break;
+            }
+        }
+
+        // ===== Commands =====
+        function sendCommand(cmd) {
+            socket.emit('command', { command: cmd, speed: 70 });
+            document.getElementById('statusText').textContent = cmd;
+        }
+
+        function takePhoto() {
+            socket.emit('take_photo', {});
+        }
+
+        function toggleRecording() {
+            if (!isRecording) {
+                socket.emit('start_recording', {});
+            } else {
+                socket.emit('stop_recording', {});
+            }
+        }
+
+        function setHome() {
+            socket.emit('set_home', {});
+        }
+
+        function returnHome() {
+            socket.emit('return_home', {});
+            document.getElementById('cancelBtn').style.display = 'block';
+            document.getElementById('navStatus').style.display = 'block';
+        }
+
+        function cancelNavigation() {
+            socket.emit('cancel_return', {});
+            document.getElementById('cancelBtn').style.display = 'none';
+        }
+
+        // ===== Socket Events =====
+        socket.on('photo_taken', (data) => {
+            alert('📸 תמונה נשמרה!');
+            updateGallery();
+        });
+
+        socket.on('recording_started', (data) => {
+            isRecording = true;
+            const btn = document.getElementById('recordBtn');
+            btn.classList.add('recording');
+            btn.textContent = '⏹️ עצור הקלטה';
+        });
+
+        socket.on('recording_stopped', (data) => {
+            isRecording = false;
+            const btn = document.getElementById('recordBtn');
+            btn.classList.remove('recording');
+            btn.textContent = '🎥 התחל הקלטה';
+            updateGallery();
+        });
+
+        socket.on('home_set', (data) => {
+            alert('🏠 נקודת בית נקבעה!');
+        });
+
+        socket.on('navigation_update', (data) => {
+            document.getElementById('distanceHome').textContent = data.distance.toFixed(1) + 'מ';
+            document.getElementById('navMessage').textContent = `מרחק: ${data.distance.toFixed(1)}מ | כיוון: ${data.bearing.toFixed(0)}°`;
+        });
+
+        socket.on('navigation_complete', (data) => {
+            alert('✅ הגעת לנקודת הבית!');
+            document.getElementById('cancelBtn').style.display = 'none';
+            document.getElementById('navStatus').style.display = 'none';
+        });
+
+        // ===== Status Updates =====
+        setInterval(() => {
+            fetch('/status')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('distance').textContent = data.distance > 0 ? data.distance.toFixed(1) : '--';
+                    
+                    if (data.gps.latitude) {
+                        document.getElementById('latitude').textContent = data.gps.latitude.toFixed(6);
+                        document.getElementById('longitude').textContent = data.gps.longitude.toFixed(6);
+                        document.getElementById('altitude').textContent = (data.gps.altitude || '--') + 'מ';
+                        document.getElementById('speed').textContent = (data.gps.speed || 0).toFixed(1) + ' קמ"ש';
+                        document.getElementById('satellites').textContent = data.gps.satellites;
+                    }
+                });
+        }, 500);
+
+        function updateGallery() {
+            fetch('/media/photos')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('photoCount').textContent = data.photos.length;
+                    
+                    const gallery = document.getElementById('gallery');
+                    gallery.innerHTML = '';
+                    data.photos.slice(0, 4).forEach(photo => {
+                        const item = document.createElement('div');
+                        item.className = 'gallery-item';
+                        item.innerHTML = `
+                            <img src="/media/photo/${photo}" alt="${photo}">
+                            <div class="timestamp">${photo}</div>
+                        `;
+                        item.onclick = () => window.open(`/media/photo/${photo}`);
+                        gallery.appendChild(item);
+                    });
+                });
+            
+            fetch('/media/videos')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('videoCount').textContent = data.videos.length;
+                });
+        }
+
+        // ===== Init =====
+        updateGamepadInfo();
+        pollGamepad();
+        loadMapping();
+        updateGallery();
+        setInterval(updateGamepadInfo, 2000);
+        setInterval(updateGallery, 5000);
+    </script>
+</body>
+</html>
