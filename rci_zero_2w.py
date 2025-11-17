@@ -1,4 +1,16 @@
-from flask import Flask, render_template, Response, jsonify, send_file
+#!/usr/bin/env python3
+"""
+RC Car Server with Multiple Ports
+Each port offers a different interface:
+
+- 5000: Full Control
+- 5001: Video Only (RTSP-style)
+- 5002: GPS and Tracking Only
+- 5003: Media Management (photos/video)
+- 5004: API Only (JSON)
+"""
+
+from flask import Flask, render_template, Response, jsonify, send_file, request
 from flask_socketio import SocketIO
 import RPi.GPIO as GPIO
 from picamera2 import Picamera2
@@ -10,275 +22,59 @@ import time
 import os
 from datetime import datetime
 import json
-import math
 
-# GPS (אם קיים)
-try:
-    import serial
-    import pynmea2
-    GPS_AVAILABLE = True
-except:
-    GPS_AVAILABLE = False
-    print("⚠️ GPS לא זמין - התקן: pip install pyserial pynmea2")
+# ========== Shared Resources ==========
 
-app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
+# GPIO, Camera, GPS etc. shared for all servers
 
-# הגדרות GPIO
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 
-# ========== פינים ==========
+# Pins
+
 SERVO_LEFT = 17
 SERVO_RIGHT = 27
 ULTRASONIC_TRIG = 23
 ULTRASONIC_ECHO = 24
 LED_FRONT = 22
 
-# הגדרת פינים
-GPIO.setup(SERVO_LEFT, GPIO.OUT)
-GPIO.setup(SERVO_RIGHT, GPIO.OUT)
-GPIO.setup(ULTRASONIC_TRIG, GPIO.OUT)
-GPIO.setup(ULTRASONIC_ECHO, GPIO.IN)
-GPIO.setup(LED_FRONT, GPIO.OUT)
+# GPIO Setup
 
-# PWM למנועי סרוו
+for pin in [SERVO_LEFT, SERVO_RIGHT, ULTRASONIC_TRIG, ULTRASONIC_ECHO, LED_FRONT]:
+    if pin in [SERVO_LEFT, SERVO_RIGHT, LED_FRONT]:
+        GPIO.setup(pin, GPIO.OUT)
+    else:
+        GPIO.setup(pin, GPIO.OUT if pin == ULTRASONIC_TRIG else GPIO.IN)
+
 pwm_left = GPIO.PWM(SERVO_LEFT, 50)
 pwm_right = GPIO.PWM(SERVO_RIGHT, 50)
-pwm_left.start(0)
-pwm_right.start(0)
+pwm_left.start(7.5)
+pwm_right.start(7.5)
 
-# משתנים גלובליים
-current_distance = 0
-obstacle_warning = False
-lights_on = False
-auto_avoid = False
-is_recording = False
-recording_thread = None
+# Shared variables
 
-# GPS
-gps_data = {
-    'latitude': None,
-    'longitude': None,
-    'altitude': None,
-    'speed': None,
-    'timestamp': None,
-    'satellites': 0
+shared_state = {
+    "distance": 0,
+    "obstacle_warning": False,
+    "lights_on": False,
+    "auto_avoid": False,
+    "is_recording": False,
+    "gps": {
+        "latitude": None,
+        "longitude": None,
+        "altitude": None,
+        "speed": None,
+        "satellites": 0
+    },
+    "home_position": None
 }
-home_position = None
-auto_return_active = False
 
-# תיקיות לשמירת קבצים
-MEDIA_DIR = '/home/pi/rc_car_media'
-os.makedirs(MEDIA_DIR, exist_ok=True)
-os.makedirs(f'{MEDIA_DIR}/photos', exist_ok=True)
-os.makedirs(f'{MEDIA_DIR}/videos', exist_ok=True)
+# Shared camera
 
-# ========== GPS Functions ==========
-class GPSReader:
-    def __init__(self, port='/dev/serial0', baudrate=9600):
-        self.port = port
-        self.baudrate = baudrate
-        self.serial = None
-        self.running = False
-        
-    def start(self):
-        """התחל קריאת GPS"""
-        try:
-            self.serial = serial.Serial(self.port, self.baudrate, timeout=1)
-            self.running = True
-            thread = threading.Thread(target=self._read_loop, daemon=True)
-            thread.start()
-            print("✅ GPS מופעל")
-            return True
-        except Exception as e:
-            print(f"❌ שגיאה בהפעלת GPS: {e}")
-            return False
-    
-    def _read_loop(self):
-        """לולאת קריאה מ-GPS"""
-        global gps_data
-        while self.running:
-            try:
-                line = self.serial.readline().decode('ascii', errors='ignore')
-                if line.startswith('$GPGGA') or line.startswith('$GNGGA'):
-                    msg = pynmea2.parse(line)
-                    gps_data['latitude'] = msg.latitude
-                    gps_data['longitude'] = msg.longitude
-                    gps_data['altitude'] = msg.altitude
-                    gps_data['satellites'] = msg.num_sats
-                    gps_data['timestamp'] = datetime.now().isoformat()
-                elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
-                    msg = pynmea2.parse(line)
-                    gps_data['speed'] = msg.spd_over_grnd_kmph if msg.spd_over_grnd_kmph else 0
-            except Exception as e:
-                pass
-            time.sleep(0.1)
-    
-    def stop(self):
-        self.running = False
-        if self.serial:
-            self.serial.close()
-
-# אתחול GPS
-gps_reader = None
-if GPS_AVAILABLE:
-    gps_reader = GPSReader()
-    gps_reader.start()
-
-# ========== Navigation Functions ==========
-def calculate_distance(lat1, lon1, lat2, lon2):
-    """חישוב מרחק בין שתי נקודות GPS (בקילומטרים)"""
-    R = 6371  # רדיוס כדור הארץ בק"מ
-    
-    lat1_rad = math.radians(lat1)
-    lat2_rad = math.radians(lat2)
-    delta_lat = math.radians(lat2 - lat1)
-    delta_lon = math.radians(lon2 - lon1)
-    
-    a = math.sin(delta_lat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon/2)**2
-    c = 2 * math.asin(math.sqrt(a))
-    
-    return R * c
-
-def calculate_bearing(lat1, lon1, lat2, lon2):
-    """חישוב כיוון (בדרגות) בין שתי נקודות"""
-    lat1_rad = math.radians(lat1)
-    lat2_rad = math.radians(lat2)
-    delta_lon = math.radians(lon2 - lon1)
-    
-    x = math.sin(delta_lon) * math.cos(lat2_rad)
-    y = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(delta_lon)
-    
-    bearing = math.degrees(math.atan2(x, y))
-    return (bearing + 360) % 360
-
-def auto_return_home():
-    """חזור אוטומטית לנקודת הבית"""
-    global auto_return_active
-    
-    if not home_position or not gps_data['latitude']:
-        socketio.emit('navigation_error', {'message': 'אין נתוני GPS או נקודת בית'})
-        return
-    
-    auto_return_active = True
-    socketio.emit('navigation_started', {'message': 'מתחיל ניווט לבית...'})
-    
-    while auto_return_active:
-        current_lat = gps_data['latitude']
-        current_lon = gps_data['longitude']
-        home_lat = home_position['latitude']
-        home_lon = home_position['longitude']
-        
-        # חשב מרחק וכיוון
-        distance = calculate_distance(current_lat, current_lon, home_lat, home_lon) * 1000  # במטרים
-        bearing = calculate_bearing(current_lat, current_lon, home_lat, home_lon)
-        
-        socketio.emit('navigation_update', {
-            'distance': distance,
-            'bearing': bearing
-        })
-        
-        # בדוק אם הגענו (דיוק של 3 מטרים)
-        if distance < 3:
-            servo_stop()
-            auto_return_active = False
-            socketio.emit('navigation_complete', {'message': 'הגעת לנקודת הבית!'})
-            break
-        
-        # בדוק מכשולים
-        if obstacle_warning and auto_avoid:
-            servo_stop()
-            time.sleep(0.5)
-            # נסה לעקוף
-            servo_turn_right(60)
-            time.sleep(1)
-            servo_forward(50)
-            time.sleep(1)
-        else:
-            # נווט לכיוון הבית
-            # כאן צריך להוסיף לוגיקה של compass/IMU לזיהוי כיוון הרכב
-            # לעת עתה פשוט נסע קדימה
-            servo_forward(50)
-        
-        time.sleep(0.5)
-
-# ========== Servo Functions ==========
-def servo_stop():
-    pwm_left.ChangeDutyCycle(7.5)
-    pwm_right.ChangeDutyCycle(7.5)
-
-def servo_forward(speed=100):
-    left_duty = 7.5 + (speed / 100 * 2.5)
-    right_duty = 7.5 - (speed / 100 * 2.5)
-    pwm_left.ChangeDutyCycle(left_duty)
-    pwm_right.ChangeDutyCycle(right_duty)
-
-def servo_backward(speed=100):
-    left_duty = 7.5 - (speed / 100 * 2.5)
-    right_duty = 7.5 + (speed / 100 * 2.5)
-    pwm_left.ChangeDutyCycle(left_duty)
-    pwm_right.ChangeDutyCycle(right_duty)
-
-def servo_turn_left(speed=100):
-    left_duty = 7.5 - (speed / 100 * 2.5)
-    right_duty = 7.5 - (speed / 100 * 2.5)
-    pwm_left.ChangeDutyCycle(left_duty)
-    pwm_right.ChangeDutyCycle(right_duty)
-
-def servo_turn_right(speed=100):
-    left_duty = 7.5 + (speed / 100 * 2.5)
-    right_duty = 7.5 + (speed / 100 * 2.5)
-    pwm_left.ChangeDutyCycle(left_duty)
-    pwm_right.ChangeDutyCycle(right_duty)
-
-# ========== Ultrasonic ==========
-def get_distance():
-    try:
-        GPIO.output(ULTRASONIC_TRIG, GPIO.LOW)
-        time.sleep(0.00001)
-        GPIO.output(ULTRASONIC_TRIG, GPIO.HIGH)
-        time.sleep(0.00001)
-        GPIO.output(ULTRASONIC_TRIG, GPIO.LOW)
-        
-        timeout = time.time() + 0.1
-        
-        while GPIO.input(ULTRASONIC_ECHO) == GPIO.LOW:
-            pulse_start = time.time()
-            if pulse_start > timeout:
-                return -1
-        
-        while GPIO.input(ULTRASONIC_ECHO) == GPIO.HIGH:
-            pulse_end = time.time()
-            if pulse_end > timeout:
-                return -1
-        
-        pulse_duration = pulse_end - pulse_start
-        distance = pulse_duration * 17150
-        distance = round(distance, 2)
-        
-        return distance if distance < 400 else 400
-    except:
-        return -1
-
-def distance_monitor():
-    global current_distance, obstacle_warning
-    while True:
-        dist = get_distance()
-        if dist > 0:
-            current_distance = dist
-            obstacle_warning = dist < 20
-            
-            if obstacle_warning and auto_avoid:
-                servo_stop()
-                socketio.emit('obstacle_detected', {'distance': dist})
-        
-        time.sleep(0.1)
-
-# ========== Camera & Recording ==========
 picam2 = Picamera2()
 config = picam2.create_video_configuration(main={"size": (640, 480)})
 picam2.configure(config)
+
 
 class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
@@ -290,242 +86,432 @@ class StreamingOutput(io.BufferedIOBase):
             self.frame = buf
             self.condition.notify_all()
 
+
 output = StreamingOutput()
 picam2.start_recording(JpegEncoder(), FileOutput(output))
 
-def take_photo():
-    """צלם תמונה בודדת"""
-    try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'{MEDIA_DIR}/photos/photo_{timestamp}.jpg'
-        
-        # צלם תמונה באיכות גבוהה
-        picam2.stop_recording()
-        photo_config = picam2.create_still_configuration(main={"size": (1920, 1080)})
-        picam2.configure(photo_config)
-        picam2.start()
-        picam2.capture_file(filename)
-        picam2.stop()
-        
-        # חזור למצב סטרימינג
-        picam2.configure(config)
-        picam2.start_recording(JpegEncoder(), FileOutput(output))
-        
-        print(f"📸 תמונה נשמרה: {filename}")
-        return filename
-    except Exception as e:
-        print(f"❌ שגיאה בצילום: {e}")
-        return None
+# Shared control functions
 
-def start_video_recording():
-    """התחל הקלטת וידאו"""
-    global is_recording, recording_thread
-    
-    if is_recording:
-        return False
-    
-    try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'{MEDIA_DIR}/videos/video_{timestamp}.h264'
-        
-        # עצור סטרימינג והתחל הקלטה
-        picam2.stop_recording()
-        video_config = picam2.create_video_configuration()
-        picam2.configure(video_config)
-        
-        encoder = H264Encoder(bitrate=10000000)
-        picam2.start_recording(encoder, filename)
-        
-        is_recording = True
-        print(f"🎥 מתחיל הקלטה: {filename}")
-        return filename
-    except Exception as e:
-        print(f"❌ שגיאה בהקלטה: {e}")
-        return None
 
-def stop_video_recording():
-    """עצור הקלטת וידאו"""
-    global is_recording
-    
-    if not is_recording:
-        return None
-    
-    try:
-        picam2.stop_recording()
-        
-        # חזור למצב סטרימינג
-        picam2.configure(config)
-        picam2.start_recording(JpegEncoder(), FileOutput(output))
-        
-        is_recording = False
-        print("⏹️ הקלטה נעצרה")
-        return True
-    except Exception as e:
-        print(f"❌ שגיאה בעצירת הקלטה: {e}")
-        return False
+def servo_stop():
+    pwm_left.ChangeDutyCycle(7.5)
+    pwm_right.ChangeDutyCycle(7.5)
 
-# ========== Flask Routes ==========
-@app.route('/')
-def index():
-    return render_template('control_with_gamepad.html')
 
-def generate():
+def servo_forward(speed=100):
+    left_duty = 7.5 + (speed / 100 * 2.5)
+    right_duty = 7.5 - (speed / 100 * 2.5)
+    pwm_left.ChangeDutyCycle(left_duty)
+    pwm_right.ChangeDutyCycle(right_duty)
+
+
+def servo_backward(speed=100):
+    left_duty = 7.5 - (speed / 100 * 2.5)
+    right_duty = 7.5 + (speed / 100 * 2.5)
+    pwm_left.ChangeDutyCycle(left_duty)
+    pwm_right.ChangeDutyCycle(right_duty)
+
+
+def servo_turn_left(speed=100):
+    left_duty = 7.5 - (speed / 100 * 2.5)
+    right_duty = 7.5 - (speed / 100 * 2.5)
+    pwm_left.ChangeDutyCycle(left_duty)
+    pwm_right.ChangeDutyCycle(right_duty)
+
+
+def servo_turn_right(speed=100):
+    left_duty = 7.5 + (speed / 100 * 2.5)
+    right_duty = 7.5 + (speed / 100 * 2.5)
+    pwm_left.ChangeDutyCycle(left_duty)
+    pwm_right.ChangeDutyCycle(right_duty)
+
+
+def generate_video_stream():
+    """Shared video stream generator"""
     while True:
         with output.condition:
             output.condition.wait()
             frame = output.frame
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
 
-@app.route('/video_feed')
+# ========== PORT 5000: Full Control ==========
+
+
+app_full = Flask(__name__, template_folder="templates")
+sio_full = SocketIO(app_full, cors_allowed_origins="*")
+
+
+@app_full.route("/")
+def full_index():
+    return render_template("control_complete.html")
+
+
+@app_full.route("/video_feed")
+def full_video():
+    return Response(generate_video_stream(),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app_full.route("/status")
+def full_status():
+    return jsonify(shared_state)
+
+
+@sio_full.on("command")
+def full_command(data):
+    cmd = data.get("command")
+    speed = data.get("speed", 70)
+
+    if cmd == "forward":
+        servo_forward(speed)
+    elif cmd == "backward":
+        servo_backward(speed)
+    elif cmd == "left":
+        servo_turn_left(speed)
+    elif cmd == "right":
+        servo_turn_right(speed)
+    elif cmd == "stop":
+        servo_stop()
+
+
+@sio_full.on("lights")
+def full_lights(data):
+    shared_state["lights_on"] = not shared_state["lights_on"]
+    GPIO.output(LED_FRONT, GPIO.HIGH if shared_state["lights_on"] else GPIO.LOW)
+
+# ========== PORT 5001: Video Only ==========
+
+
+app_video = Flask(__name__)
+
+
+@app_video.route("/")
+def video_index():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RC Car - Video Only</title>
+<style>
+body { margin: 0; padding: 0; background: #000; display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; }
+h1 { color: white; font-family: Arial, sans-serif; margin-bottom: 20px; }
+img { max-width: 100%; max-height: 90vh; border: 3px solid #2196F3; border-radius: 10px; }
+.info { color: #aaa; font-family: monospace; margin-top: 20px; text-align: center; }
+.fullscreen-btn { position: fixed; bottom: 20px; right: 20px; padding: 15px 25px; background: #2196F3; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; }
+.fullscreen-btn:hover { background: #1976D2; }
+</style>
+</head>
+<body>
+<h1>Video Stream - RC Car</h1>
+<img id="video" src="/video_feed" alt="Live Video">
+<div class="info">
+<p>Live Stream | Read-Only Mode</p>
+<p>Port 5001 - Video Access Only</p>
+</div>
+<button class="fullscreen-btn" onclick="goFullscreen()">Fullscreen</button>
+<script>
+function goFullscreen() {
+    const video = document.getElementById("video");
+    if (video.requestFullscreen) {
+        video.requestFullscreen();
+    } else if (video.webkitRequestFullscreen) {
+        video.webkitRequestFullscreen();
+    }
+}
+document.getElementById("video").onerror = function() {
+    setTimeout(() => {
+        this.src = "/video_feed?" + new Date().getTime();
+    }, 1000);
+};
+</script>
+</body>
+</html>
+"""
+
+
+@app_video.route("/video_feed")
 def video_feed():
-    return Response(generate(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_video_stream(),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
 
-@app.route('/status')
-def status():
+# ========== PORT 5002: GPS & Tracking Only ==========
+
+
+app_gps = Flask(__name__)
+sio_gps = SocketIO(app_gps, cors_allowed_origins="*")
+
+
+@app_gps.route("/")
+def gps_index():
+    return """
+<!DOCTYPE html>
+<html dir="ltr" lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RC Car - GPS Tracking</title>
+<style>
+body { margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); font-family: Arial, sans-serif; color: white; }
+.container { max-width: 800px; margin: 0 auto; background: white; border-radius: 15px; padding: 30px; color: #333; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
+h1 { text-align: center; color: #667eea; margin-bottom: 30px; }
+.gps-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0; }
+.gps-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; text-align: center; color: white; }
+.gps-label { font-size: 14px; opacity: 0.9; margin-bottom: 10px; }
+.gps-value { font-size: 32px; font-weight: bold; }
+#map { width: 100%; height: 400px; border-radius: 10px; margin-top: 20px; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 18px; color: #666; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>GPS Tracking - RC Car</h1>
+<div class="gps-grid">
+    <div class="gps-card"><div class="gps-label">Latitude</div><div class="gps-value" id="lat">--</div></div>
+    <div class="gps-card"><div class="gps-label">Longitude</div><div class="gps-value" id="lon">--</div></div>
+    <div class="gps-card"><div class="gps-label">Altitude</div><div class="gps-value" id="alt">--</div></div>
+    <div class="gps-card"><div class="gps-label">Speed</div><div class="gps-value" id="speed">--</div></div>
+    <div class="gps-card"><div class="gps-label">Satellites</div><div class="gps-value" id="sats">0</div></div>
+    <div class="gps-card"><div class="gps-label">Accuracy</div><div class="gps-value" id="accuracy">--</div></div>
+</div>
+<div id="map">Map (requires Google Maps API)</div>
+</div>
+<script>
+    setInterval(() => {
+        fetch("/gps_data").then(r => r.json()).then(data => {
+            if (data.latitude) {
+                document.getElementById("lat").textContent = data.latitude.toFixed(6);
+                document.getElementById("lon").textContent = data.longitude.toFixed(6);
+                document.getElementById("alt").textContent = (data.altitude || "--") + "m";
+                document.getElementById("speed").textContent = (data.speed || 0).toFixed(1) + " km/h";
+                document.getElementById("sats").textContent = data.satellites;
+                document.getElementById("accuracy").textContent = 
+                    data.satellites >= 6 ? "High" : data.satellites >= 4 ? "Medium" : "Low";
+            }
+        });
+    }, 500);
+</script>
+</body>
+</html>
+"""
+
+
+@app_gps.route("/gps_data")
+def gps_data():
+    return jsonify(shared_state["gps"])
+
+# ========== PORT 5003: Media Gallery ==========
+
+
+app_media = Flask(__name__)
+
+MEDIA_DIR = "/home/pi/rc_car_media"
+
+
+@app_media.route("/")
+def media_index():
+    return """
+<!DOCTYPE html>
+<html dir="ltr" lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RC Car - Media Gallery</title>
+<style>
+body { margin: 0; padding: 20px; background: #1a1a1a; font-family: Arial, sans-serif; color: white; }
+h1 { text-align: center; color: #2196F3; }
+.tabs { display: flex; justify-content: center; gap: 20px; margin: 30px 0; }
+.tab { padding: 15px 30px; background: #333; border: none; border-radius: 8px; color: white; cursor: pointer; font-size: 16px; font-weight: bold; }
+.tab.active { background: #2196F3; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; max-width: 1400px; margin: 0 auto; }
+.media-item { background: #2a2a2a; border-radius: 10px; overflow: hidden; cursor: pointer; transition: transform 0.2s; }
+.media-item:hover { transform: scale(1.05); }
+.media-item img, .media-item video { width: 100%; height: 200px; object-fit: cover; }
+.media-info { padding: 15px; }
+.media-name { font-weight: bold; margin-bottom: 5px; }
+</style>
+</head>
+<body>
+<h1>Media Gallery - RC Car</h1>
+<div class="tabs">
+    <button class="tab active" onclick="showTab('photos')">Photos</button>
+    <button class="tab" onclick="showTab('videos')">Videos</button>
+</div>
+<div class="gallery" id="gallery"></div>
+<script>
+    let currentTab = "photos";
+    function showTab(tab) {
+        currentTab = tab;
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        event.target.classList.add("active");
+        loadMedia();
+    }
+    function loadMedia() {
+        fetch(`/list_${currentTab}`).then(r => r.json()).then(data => {
+            const gallery = document.getElementById("gallery");
+            gallery.innerHTML = "";
+            const items = data[currentTab] || [];
+            items.forEach(item => {
+                const div = document.createElement("div");
+                div.className = "media-item";
+                if (currentTab === "photos") {
+                    div.innerHTML = `<img src="/media/photo/${item}" alt="${item}"><div class="media-info"><div class="media-name">${item}</div></div>`;
+                    div.onclick = () => window.open(`/media/photo/${item}`);
+                } else {
+                    div.innerHTML = `<video src="/media/video/${item}" controls></video><div class="media-info"><div class="media-name">${item}</div></div>`;
+                }
+                gallery.appendChild(div);
+            });
+        });
+    }
+    loadMedia();
+    setInterval(loadMedia, 5000);
+</script>
+</body>
+</html>
+"""
+
+
+@app_media.route("/list_photos")
+def list_photos():
+    photos = sorted(os.listdir(f"{MEDIA_DIR}/photos"), reverse=True) if os.path.exists(f"{MEDIA_DIR}/photos") else []
+    return jsonify({"photos": photos})
+
+
+@app_media.route("/list_videos")
+def list_videos():
+    videos = sorted(os.listdir(f"{MEDIA_DIR}/videos"), reverse=True) if os.path.exists(f"{MEDIA_DIR}/videos") else []
+    return jsonify({"videos": videos})
+
+
+@app_media.route("/media/photo/<filename>")
+def get_photo(filename):
+    return send_file(f"{MEDIA_DIR}/photos/{filename}")
+
+
+@app_media.route("/media/video/<filename>")
+def get_video(filename):
+    return send_file(f"{MEDIA_DIR}/videos/{filename}")
+
+# ========== PORT 5004: API Only (JSON) ==========
+
+
+app_api = Flask(__name__)
+
+
+@app_api.route("/")
+def api_index():
     return jsonify({
-        'distance': current_distance,
-        'obstacle_warning': obstacle_warning,
-        'lights_on': lights_on,
-        'auto_avoid': auto_avoid,
-        'is_recording': is_recording,
-        'gps': gps_data,
-        'has_home': home_position is not None,
-        'auto_return_active': auto_return_active
+        "service": "RC Car API",
+        "version": "1.0",
+        "endpoints": {
+            "/status": "GET - Full system status",
+            "/control": "POST - Send control commands",
+            "/gps": "GET - GPS data only",
+            "/sensors": "GET - Sensor readings",
+            "/media/count": "GET - Media file counts"
+        }
     })
 
-@app.route('/media/photos')
-def list_photos():
-    """רשימת תמונות"""
-    photos = sorted(os.listdir(f'{MEDIA_DIR}/photos'), reverse=True)
-    return jsonify({'photos': photos})
 
-@app.route('/media/videos')
-def list_videos():
-    """רשימת סרטונים"""
-    videos = sorted(os.listdir(f'{MEDIA_DIR}/videos'), reverse=True)
-    return jsonify({'videos': videos})
+@app_api.route("/status")
+def api_status():
+    return jsonify(shared_state)
 
-@app.route('/media/photo/<filename>')
-def get_photo(filename):
-    """הורד תמונה"""
-    return send_file(f'{MEDIA_DIR}/photos/{filename}')
 
-@app.route('/media/video/<filename>')
-def get_video(filename):
-    """הורד וידאו"""
-    return send_file(f'{MEDIA_DIR}/videos/{filename}')
+@app_api.route("/control", methods=["POST"])
+def api_control():
+    data = request.get_json()
+    cmd = data.get("command")
+    speed = data.get("speed", 70)
 
-# ========== Socket Events ==========
-@socketio.on('command')
-def handle_command(data):
-    if auto_return_active:
-        return  # אל תקבל פקודות בזמן ניווט אוטומטי
-    
-    cmd = data.get('command')
-    speed = data.get('speed', 70)
-    
-    if cmd == 'forward' and obstacle_warning and auto_avoid:
-        socketio.emit('blocked', {'message': 'מכשול מזוהה!'})
-        return
-    
-    if cmd == 'forward':
+    if cmd == "forward":
         servo_forward(speed)
-    elif cmd == 'backward':
+    elif cmd == "backward":
         servo_backward(speed)
-    elif cmd == 'left':
+    elif cmd == "left":
         servo_turn_left(speed)
-    elif cmd == 'right':
+    elif cmd == "right":
         servo_turn_right(speed)
-    elif cmd == 'stop':
+    elif cmd == "stop":
         servo_stop()
-
-@socketio.on('lights')
-def handle_lights(data):
-    global lights_on
-    lights_on = not lights_on
-    GPIO.output(LED_FRONT, GPIO.HIGH if lights_on else GPIO.LOW)
-    socketio.emit('lights_status', {'on': lights_on})
-
-@socketio.on('auto_avoid')
-def handle_auto_avoid(data):
-    global auto_avoid
-    auto_avoid = data.get('enabled', False)
-    socketio.emit('auto_avoid_status', {'enabled': auto_avoid})
-
-@socketio.on('take_photo')
-def handle_take_photo(data):
-    """צלם תמונה"""
-    filename = take_photo()
-    if filename:
-        socketio.emit('photo_taken', {'filename': os.path.basename(filename)})
     else:
-        socketio.emit('photo_error', {'message': 'שגיאה בצילום'})
+        return jsonify({"error": "Unknown command"}), 400
 
-@socketio.on('start_recording')
-def handle_start_recording(data):
-    """התחל הקלטה"""
-    filename = start_video_recording()
-    if filename:
-        socketio.emit('recording_started', {'filename': os.path.basename(filename)})
-    else:
-        socketio.emit('recording_error', {'message': 'שגיאה בהקלטה'})
+    return jsonify({"success": True, "command": cmd, "speed": speed})
 
-@socketio.on('stop_recording')
-def handle_stop_recording(data):
-    """עצור הקלטה"""
-    if stop_video_recording():
-        socketio.emit('recording_stopped', {})
-    else:
-        socketio.emit('recording_error', {'message': 'שגיאה בעצירת הקלטה'})
 
-@socketio.on('set_home')
-def handle_set_home(data):
-    """קבע נקודת בית"""
-    global home_position
-    if gps_data['latitude']:
-        home_position = {
-            'latitude': gps_data['latitude'],
-            'longitude': gps_data['longitude'],
-            'timestamp': datetime.now().isoformat()
-        }
-        socketio.emit('home_set', {'position': home_position})
-        print(f"🏠 נקודת בית נקבעה: {home_position}")
-    else:
-        socketio.emit('gps_error', {'message': 'אין אות GPS'})
+@app_api.route("/gps")
+def api_gps():
+    return jsonify(shared_state["gps"])
 
-@socketio.on('return_home')
-def handle_return_home(data):
-    """חזור לבית"""
-    thread = threading.Thread(target=auto_return_home, daemon=True)
-    thread.start()
 
-@socketio.on('cancel_return')
-def handle_cancel_return(data):
-    """בטל חזרה לבית"""
-    global auto_return_active
-    auto_return_active = False
-    servo_stop()
-    socketio.emit('navigation_cancelled', {})
+@app_api.route("/sensors")
+def api_sensors():
+    return jsonify({
+        "distance": shared_state["distance"],
+        "obstacle_warning": shared_state["obstacle_warning"]
+    })
 
-# ========== Startup ==========
-if __name__ == '__main__':
-    # התחל מעקב מרחק
-    distance_thread = threading.Thread(target=distance_monitor, daemon=True)
-    distance_thread.start()
-    
+
+@app_api.route("/media/count")
+def api_media_count():
+    photo_count = len(os.listdir(f"{MEDIA_DIR}/photos")) if os.path.exists(f"{MEDIA_DIR}/photos") else 0
+    video_count = len(os.listdir(f"{MEDIA_DIR}/videos")) if os.path.exists(f"{MEDIA_DIR}/videos") else 0
+    return jsonify({
+        "photos": photo_count,
+        "videos": video_count
+    })
+
+# ========== Run All Servers ==========
+
+
+def run_server(app, port, name):
+    """Run server on specific port"""
+    print(f"Starting {name} on port {port}")
+    if hasattr(app, "run"):
+        if name == "Full Control":
+            sio_full.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
+        elif name == "GPS Tracking":
+            sio_gps.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
+        else:
+            app.run(host="0.0.0.0", port=port, debug=False)
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("RC Car Multi-Port Server")
+    print("=" * 60)
+    print("Available interfaces:")
+    print("  - http://<IP>:5000 - Full Control")
+    print("  - http://<IP>:5001 - Video Only")
+    print("  - http://<IP>:5002 - GPS Tracking")
+    print("  - http://<IP>:5003 - Media Gallery")
+    print("  - http://<IP>:5004 - API Only")
+    print("=" * 60)
+
+    # Create threads for each server
+    threads = [
+        threading.Thread(target=run_server, args=(app_full, 5000, "Full Control"), daemon=True),
+        threading.Thread(target=run_server, args=(app_video, 5001, "Video Only"), daemon=True),
+        threading.Thread(target=run_server, args=(app_gps, 5002, "GPS Tracking"), daemon=True),
+        threading.Thread(target=run_server, args=(app_media, 5003, "Media Gallery"), daemon=True),
+        threading.Thread(target=run_server, args=(app_api, 5004, "API Only"), daemon=True)
+    ]
+
     try:
-        print("=" * 50)
-        print("🚗 שרת מכונית RC פועל!")
-        print(f"📍 GPS: {'זמין ✅' if GPS_AVAILABLE else 'לא זמין ❌'}")
-        print(f"📁 מדיה נשמרת ב: {MEDIA_DIR}")
-        print("=" * 50)
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+        # Start all servers
+        for thread in threads:
+            thread.start()
+        
+        # Wait for all threads
+        for thread in threads:
+            thread.join()
+            
+    except KeyboardInterrupt:
+        print("\nShutting down...")
     finally:
         servo_stop()
-        GPIO.output(LED_FRONT, GPIO.LOW)
         GPIO.cleanup()
         picam2.stop_recording()
-        if gps_reader:
-            gps_reader.stop()
+        print("Shutdown complete")
