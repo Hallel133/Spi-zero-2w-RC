@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-שרת מכונית RC עם פורטים מרובים + אבטחה
-כל פורט מציע ממשק שונה עם סיסמה משלו:
-- 5000: בקרה מלאה
-- 5001: צפייה בוידאו בלבד
-- 5002: GPS ומעקב בלבד
-- 5003: ניהול מדיה
-- 5004: API בלבד
+RC Car Multi-Port Server with Authentication
+Each port offers different interface with its own password:
+- 5000: Full Control
+- 5001: Video Only
+- 5002: GPS Tracking
+- 5003: Media Gallery
+- 5004: API Only
 """
 
 from flask import Flask, render_template, Response, jsonify, send_file, request, abort
@@ -24,20 +24,20 @@ from datetime import datetime
 import json
 
 # ==========================================
-# 🔐 הגדרות סיסמאות - ערוך כאן!
+# 🔐 PASSWORD SETTINGS - EDIT HERE!
 # ==========================================
 PASSWORDS = {
-    'full_control': 'admin123',      # פורט 5000 - בקרה מלאה
-    'video_only': 'video123',        # פורט 5001 - וידאו בלבד
-    'gps_tracking': 'gps123',        # פורט 5002 - GPS בלבד
-    'media_gallery': 'media123',     # פורט 5003 - גלריה
-    'api_access': 'api123'           # פורט 5004 - API
+    'full_control': 'admin123',      # Port 5000 - Full Control
+    'video_only': 'video123',        # Port 5001 - Video Only
+    'gps_tracking': 'gps123',        # Port 5002 - GPS Only
+    'media_gallery': 'media123',     # Port 5003 - Gallery
+    'api_access': 'api123'           # Port 5004 - API
 }
 # ==========================================
 
-# פונקציית הזדהות
+# Authentication decorator
 def require_password(password_key):
-    """דקורטור לדרישת סיסמה"""
+    """Decorator to require password authentication"""
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
@@ -46,9 +46,9 @@ def require_password(password_key):
             
             if not auth or auth.password != expected_password:
                 return Response(
-                    'נדרשת הזדהות!\n'
-                    'שם משתמש: כל שם\n'
-                    f'סיסמה: {password_key}',
+                    'Authentication Required!\n'
+                    'Username: any name\n'
+                    f'Password: {password_key}',
                     401,
                     {'WWW-Authenticate': 'Basic realm="RC Car Login Required"'}
                 )
@@ -60,26 +60,27 @@ def require_password(password_key):
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 
-# פינים
+# Pin definitions
 SERVO_LEFT = 17
 SERVO_RIGHT = 27
 ULTRASONIC_TRIG = 23
 ULTRASONIC_ECHO = 24
 LED_FRONT = 22
 
-# הגדרת GPIO
+# Setup GPIO pins
 for pin in [SERVO_LEFT, SERVO_RIGHT, ULTRASONIC_TRIG, ULTRASONIC_ECHO, LED_FRONT]:
     if pin in [SERVO_LEFT, SERVO_RIGHT, LED_FRONT]:
         GPIO.setup(pin, GPIO.OUT)
     else:
         GPIO.setup(pin, GPIO.OUT if pin == ULTRASONIC_TRIG else GPIO.IN)
 
+# PWM for servos
 pwm_left = GPIO.PWM(SERVO_LEFT, 50)
 pwm_right = GPIO.PWM(SERVO_RIGHT, 50)
 pwm_left.start(7.5)
 pwm_right.start(7.5)
 
-# משתנים משותפים
+# Shared state variables
 shared_state = {
     'distance': 0,
     'obstacle_warning': False,
@@ -96,7 +97,7 @@ shared_state = {
     'home_position': None
 }
 
-# מצלמה משותפת
+# Shared camera
 picam2 = Picamera2()
 config = picam2.create_video_configuration(main={"size": (640, 480)})
 picam2.configure(config)
@@ -114,7 +115,7 @@ class StreamingOutput(io.BufferedIOBase):
 output = StreamingOutput()
 picam2.start_recording(JpegEncoder(), FileOutput(output))
 
-# פונקציות בקרה משותפות
+# Shared control functions
 def servo_stop():
     pwm_left.ChangeDutyCycle(7.5)
     pwm_right.ChangeDutyCycle(7.5)
@@ -144,7 +145,7 @@ def servo_turn_right(speed=100):
     pwm_right.ChangeDutyCycle(right_duty)
 
 def generate_video_stream():
-    """גנרטור סטרים וידאו משותף"""
+    """Shared video stream generator"""
     while True:
         with output.condition:
             output.condition.wait()
@@ -174,8 +175,7 @@ def full_status():
 
 @sio_full.on('command')
 def full_command(data):
-    # Socket.IO לא תומך באימות HTTP Basic, אז נשתמש באימות token
-    # או פשוט נסמוך על כך שהדף עצמו מוגן
+    # Socket.IO doesn't support HTTP Basic auth, so we rely on page being protected
     cmd = data.get('command')
     speed = data.get('speed', 70)
     
@@ -197,15 +197,15 @@ def full_lights(data):
 
 @sio_full.on('take_photo')
 def full_take_photo(data):
-    print("📸 צילום תמונה...")
+    print("📸 Taking photo...")
 
 @sio_full.on('start_recording')
 def full_start_recording(data):
-    print("🎥 מתחיל הקלטה...")
+    print("🎥 Starting recording...")
 
 @sio_full.on('stop_recording')
 def full_stop_recording(data):
-    print("⏹️ עוצר הקלטה...")
+    print("⏹️ Stopping recording...")
 
 # ========== PORT 5001: Video Only 🔐 ==========
 app_video = Flask(__name__)
@@ -485,53 +485,53 @@ def gps_index():
     <body>
         <div class="container">
             <div class="header">
-                <h1>📍 מעקב GPS - מכונית RC</h1>
+                <h1>📍 GPS Tracking - RC Car</h1>
                 <span class="badge">🔒 Tracking Only</span>
             </div>
             
             <div class="gps-grid">
                 <div class="gps-card">
-                    <div class="gps-label">קו רוחב</div>
+                    <div class="gps-label">Latitude</div>
                     <div class="gps-value" id="lat">--</div>
                     <div class="gps-unit">°N/S</div>
                 </div>
                 <div class="gps-card">
-                    <div class="gps-label">קו אורך</div>
+                    <div class="gps-label">Longitude</div>
                     <div class="gps-value" id="lon">--</div>
                     <div class="gps-unit">°E/W</div>
                 </div>
                 <div class="gps-card">
-                    <div class="gps-label">גובה</div>
+                    <div class="gps-label">Altitude</div>
                     <div class="gps-value" id="alt">--</div>
-                    <div class="gps-unit">מטרים</div>
+                    <div class="gps-unit">meters</div>
                 </div>
                 <div class="gps-card">
-                    <div class="gps-label">מהירות</div>
+                    <div class="gps-label">Speed</div>
                     <div class="gps-value" id="speed">--</div>
-                    <div class="gps-unit">קמ"ש</div>
+                    <div class="gps-unit">km/h</div>
                 </div>
                 <div class="gps-card">
-                    <div class="gps-label">לוויינים</div>
+                    <div class="gps-label">Satellites</div>
                     <div class="gps-value" id="sats">0</div>
                     <div class="gps-unit">connected</div>
                 </div>
                 <div class="gps-card">
-                    <div class="gps-label">דיוק</div>
+                    <div class="gps-label">Accuracy</div>
                     <div class="gps-value" style="font-size: 24px;" id="accuracy">--</div>
                 </div>
             </div>
             
             <div id="map">
-                🗺️ מפה (דורש Google Maps API או Leaflet)
+                🗺️ Map (requires Google Maps API or Leaflet)
             </div>
             
             <div class="status-bar">
                 <div class="status-indicator">
                     <div class="indicator-dot"></div>
-                    <span><strong>סטטוס:</strong> <span id="status">מחובר</span></span>
+                    <span><strong>Status:</strong> <span id="status">Connected</span></span>
                 </div>
                 <div>
-                    <strong>עדכון אחרון:</strong> <span id="lastUpdate">--</span>
+                    <strong>Last Update:</strong> <span id="lastUpdate">--</span>
                 </div>
             </div>
         </div>
@@ -548,27 +548,27 @@ def gps_index():
                             document.getElementById('speed').textContent = (data.speed || 0).toFixed(1);
                             document.getElementById('sats').textContent = data.satellites;
                             
-                            // דיוק לפי מספר לוויינים
-                            const accuracy = data.satellites >= 8 ? 'מעולה' : 
-                                           data.satellites >= 6 ? 'גבוה' : 
-                                           data.satellites >= 4 ? 'בינוני' : 'נמוך';
+                            // Accuracy based on satellite count
+                            const accuracy = data.satellites >= 8 ? 'Excellent' : 
+                                           data.satellites >= 6 ? 'Good' : 
+                                           data.satellites >= 4 ? 'Fair' : 'Poor';
                             document.getElementById('accuracy').textContent = accuracy;
                             
-                            document.getElementById('status').textContent = 'מקבל נתונים';
+                            document.getElementById('status').textContent = 'Receiving Data';
                         } else {
-                            document.getElementById('status').textContent = 'ממתין ל-GPS';
+                            document.getElementById('status').textContent = 'Waiting for GPS';
                         }
                         
                         const now = new Date();
                         document.getElementById('lastUpdate').textContent = 
-                            now.toLocaleTimeString('he-IL');
+                            now.toLocaleTimeString('en-US');
                     })
                     .catch(err => {
-                        document.getElementById('status').textContent = 'שגיאת חיבור';
+                        document.getElementById('status').textContent = 'Connection Error';
                     });
             }
             
-            // עדכון כל חצי שנייה
+            // Update every half second
             setInterval(updateGPS, 500);
             updateGPS();
         </script>
@@ -712,34 +712,28 @@ def media_index():
                 padding: 60px 20px;
                 color: #666;
             }
-            .empty-state svg {
-                width: 100px;
-                height: 100px;
-                opacity: 0.3;
-                margin-bottom: 20px;
-            }
         </style>
     </head>
     <body>
         <div class="header">
-            <h1>📁 גלריית מדיה - מכונית RC</h1>
+            <h1>📁 Media Gallery - RC Car</h1>
             <span class="badge">🔒 Protected Gallery</span>
         </div>
         
         <div class="stats">
             <div class="stat-card">
                 <div class="stat-number" id="photoCount">0</div>
-                <div class="stat-label">תמונות</div>
+                <div class="stat-label">Photos</div>
             </div>
             <div class="stat-card">
                 <div class="stat-number" id="videoCount">0</div>
-                <div class="stat-label">סרטונים</div>
+                <div class="stat-label">Videos</div>
             </div>
         </div>
         
         <div class="tabs">
-            <button class="tab active" onclick="showTab('photos')">📷 תמונות</button>
-            <button class="tab" onclick="showTab('videos')">🎥 סרטונים</button>
+            <button class="tab active" onclick="showTab('photos')">📷 Photos</button>
+            <button class="tab" onclick="showTab('videos')">🎥 Videos</button>
         </div>
         
         <div class="gallery" id="gallery"></div>
@@ -774,7 +768,7 @@ def media_index():
                             gallery.innerHTML = `
                                 <div class="empty-state" style="grid-column: 1/-1;">
                                     <p style="font-size: 48px;">📭</p>
-                                    <p style="font-size: 18px;">אין ${currentTab === 'photos' ? 'תמונות' : 'סרטונים'} עדיין</p>
+                                    <p style="font-size: 18px;">No ${currentTab} yet</p>
                                 </div>
                             `;
                             return;
@@ -821,7 +815,7 @@ def media_index():
                     const hour = time.substring(0, 2);
                     const minute = time.substring(2, 4);
                     const second = time.substring(4, 6);
-                    return `${day}/${month}/${year} ${hour}:${minute}:${second}`;
+                    return `${month}/${day}/${year} ${hour}:${minute}:${second}`;
                 }
                 return filename;
             }
@@ -852,225 +846,4 @@ def media_index():
 @app_media.route('/list_photos')
 @require_password('media_gallery')
 def list_photos():
-    photos = sorted(os.listdir(f'{MEDIA_DIR}/photos'), reverse=True) if os.path.exists(f'{MEDIA_DIR}/photos') else []
-    return jsonify({'photos': photos})
-
-@app_media.route('/list_videos')
-@require_password('media_gallery')
-def list_videos():
-    videos = sorted(os.listdir(f'{MEDIA_DIR}/videos'), reverse=True) if os.path.exists(f'{MEDIA_DIR}/videos') else []
-    return jsonify({'videos': videos})
-
-@app_media.route('/media/photo/<filename>')
-@require_password('media_gallery')
-def get_photo(filename):
-    return send_file(f'{MEDIA_DIR}/photos/{filename}')
-
-@app_media.route('/media/video/<filename>')
-@require_password('media_gallery')
-def get_video(filename):
-    return send_file(f'{MEDIA_DIR}/videos/{filename}')
-
-# ========== PORT 5004: API Only 🔐 ==========
-app_api = Flask(__name__)
-
-@app_api.route('/')
-@require_password('api_access')
-def api_index():
-    return jsonify({
-        'service': 'RC Car API',
-        'version': '1.0',
-        'authentication': 'HTTP Basic Auth Required',
-        'endpoints': {
-            '/status': {
-                'method': 'GET',
-                'description': 'Full system status',
-                'auth_required': True
-            },
-            '/control': {
-                'method': 'POST',
-                'description': 'Send control commands',
-                'auth_required': True,
-                'parameters': {
-                    'command': 'forward|backward|left|right|stop',
-                    'speed': 'integer 0-100'
-                },
-                'example': {
-                    'command': 'forward',
-                    'speed': 70
-                }
-            },
-            '/gps': {
-                'method': 'GET',
-                'description': 'GPS data only',
-                'auth_required': True
-            },
-            '/sensors': {
-                'method': 'GET',
-                'description': 'Sensor readings',
-                'auth_required': True
-            },
-            '/media/count': {
-                'method': 'GET',
-                'description': 'Media file counts',
-                'auth_required': True
-            }
-        }
-    })
-
-@app_api.route('/status')
-@require_password('api_access')
-def api_status():
-    return jsonify({
-        'success': True,
-        'timestamp': datetime.now().isoformat(),
-        'data': shared_state
-    })
-
-@app_api.route('/control', methods=['POST'])
-@require_password('api_access')
-def api_control():
-    data = request.get_json()
-    
-    if not data:
-        return jsonify({
-            'success': False,
-            'error': 'No JSON data provided'
-        }), 400
-    
-    cmd = data.get('command')
-    speed = data.get('speed', 70)
-    
-    valid_commands = ['forward', 'backward', 'left', 'right', 'stop']
-    if cmd not in valid_commands:
-        return jsonify({
-            'success': False,
-            'error': f'Invalid command. Valid commands: {", ".join(valid_commands)}'
-        }), 400
-    
-    if not isinstance(speed, int) or speed < 0 or speed > 100:
-        return jsonify({
-            'success': False,
-            'error': 'Speed must be an integer between 0 and 100'
-        }), 400
-    
-    if cmd == 'forward':
-        servo_forward(speed)
-    elif cmd == 'backward':
-        servo_backward(speed)
-    elif cmd == 'left':
-        servo_turn_left(speed)
-    elif cmd == 'right':
-        servo_turn_right(speed)
-    elif cmd == 'stop':
-        servo_stop()
-    
-    return jsonify({
-        'success': True,
-        'timestamp': datetime.now().isoformat(),
-        'command': cmd,
-        'speed': speed
-    })
-
-@app_api.route('/gps')
-@require_password('api_access')
-def api_gps():
-    return jsonify({
-        'success': True,
-        'timestamp': datetime.now().isoformat(),
-        'data': shared_state['gps']
-    })
-
-@app_api.route('/sensors')
-@require_password('api_access')
-def api_sensors():
-    return jsonify({
-        'success': True,
-        'timestamp': datetime.now().isoformat(),
-        'data': {
-            'distance': shared_state['distance'],
-            'obstacle_warning': shared_state['obstacle_warning'],
-            'lights_on': shared_state['lights_on']
-        }
-    })
-
-@app_api.route('/media/count')
-@require_password('api_access')
-def api_media_count():
-    photo_count = len(os.listdir(f'{MEDIA_DIR}/photos')) if os.path.exists(f'{MEDIA_DIR}/photos') else 0
-    video_count = len(os.listdir(f'{MEDIA_DIR}/videos')) if os.path.exists(f'{MEDIA_DIR}/videos') else 0
-    return jsonify({
-        'success': True,
-        'timestamp': datetime.now().isoformat(),
-        'data': {
-            'photos': photo_count,
-            'videos': video_count,
-            'total': photo_count + video_count
-        }
-    })
-
-# ========== Run All Servers ==========
-def run_server(app, port, name, use_socketio=False):
-    """הרץ שרת בפורט ספציפי"""
-    print(f"🚀 {name} running on port {port}")
-    try:
-        if use_socketio:
-            if name == "Full Control":
-                sio_full.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
-            elif name == "GPS Tracking":
-                sio_gps.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
-        else:
-            app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
-    except Exception as e:
-        print(f"❌ Error starting {name}: {e}")
-
-if __name__ == '__main__':
-    print("=" * 70)
-    print("🚗 RC Car Multi-Port Server with Authentication")
-    print("=" * 70)
-    print("\n🔐 PASSWORDS (change in code):")
-    print(f"  Port 5000 (Full Control):  {PASSWORDS['full_control']}")
-    print(f"  Port 5001 (Video Only):    {PASSWORDS['video_only']}")
-    print(f"  Port 5002 (GPS Tracking):  {PASSWORDS['gps_tracking']}")
-    print(f"  Port 5003 (Media Gallery): {PASSWORDS['media_gallery']}")
-    print(f"  Port 5004 (API Access):    {PASSWORDS['api_access']}")
-    print("\n📋 Available interfaces:")
-    print("  • http://<IP>:5000 - 🎮 Full Control (בקרה מלאה)")
-    print("  • http://<IP>:5001 - 📹 Video Only (וידאו בלבד)")
-    print("  • http://<IP>:5002 - 📍 GPS Tracking (מעקב GPS)")
-    print("  • http://<IP>:5003 - 📁 Media Gallery (גלריה)")
-    print("  • http://<IP>:5004 - 🔌 API Only (JSON API)")
-    print("=" * 70)
-    print("\n💡 Tip: Use any username with the correct password")
-    print("=" * 70)
-    
-    # צור threads לכל שרת
-    threads = [
-        threading.Thread(target=run_server, args=(app_full, 5000, "Full Control", True), daemon=True),
-        threading.Thread(target=run_server, args=(app_video, 5001, "Video Only", False), daemon=True),
-        threading.Thread(target=run_server, args=(app_gps, 5002, "GPS Tracking", True), daemon=True),
-        threading.Thread(target=run_server, args=(app_media, 5003, "Media Gallery", False), daemon=True),
-        threading.Thread(target=run_server, args=(app_api, 5004, "API Only", False), daemon=True)
-    ]
-    
-    try:
-        # התחל את כל השרתים
-        for thread in threads:
-            thread.start()
-            time.sleep(0.5)  # תן זמן לכל שרת להתחיל
-        
-        print("\n✅ All servers started successfully!")
-        print("🔒 All ports are password protected")
-        print("\nPress Ctrl+C to stop all servers\n")
-        
-        # המתן לכולם
-        for thread in threads:
-            thread.join()
-            
-    except KeyboardInterrupt:
-        print("\n⚠️ Shutting down all servers...")
-    finally:
-        servo_stop()
-        GPIO.cleanup()
-        picam2.stop_recording()
-        print("✅ Shutdown complete")
+    photos = sorted(os.listdir(f'{MEDIA_DIR}/photos'), reverse=True) if os.path.exists(f'{MEDIA_DIR
